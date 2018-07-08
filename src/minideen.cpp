@@ -61,7 +61,7 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
     const uint8_t *srcp_orig = srcp;
     uint8_t *dstp_orig = dstp;
 
-    __m128i th = _mm_set1_epi16(threshold);
+    __m128i words_th = _mm_set1_epi16(threshold);
 
     int width_16 = width / 16 * 16;
 
@@ -90,8 +90,8 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
                     __m128i abs_hi = _mm_or_si128(_mm_subs_epu16(center_hi, neighbour_hi),
                                                   _mm_subs_epu16(neighbour_hi, center_hi));
 
-                    __m128i gt_mask_lo = _mm_cmpgt_epi16(th, abs_lo);
-                    __m128i gt_mask_hi = _mm_cmpgt_epi16(th, abs_hi);
+                    __m128i gt_mask_lo = _mm_cmpgt_epi16(words_th, abs_lo);
+                    __m128i gt_mask_hi = _mm_cmpgt_epi16(words_th, abs_hi);
 
                     // Subtract 65535 aka -1
                     counter_lo = _mm_sub_epi16(counter_lo, gt_mask_lo);
@@ -156,6 +156,94 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
                                       threshold,
                                       radius,
                                       magic);
+    }
+}
+
+
+static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int first_column, int width, int height, int stride, unsigned threshold, int radius, const unsigned magic[MAX_PIXEL_COUNT]) {
+    (void)first_column; // Always 0 in this function.
+    (void)magic;
+
+    const uint16_t *srcp = (const uint16_t *)srcp8;
+    uint16_t *dstp = (uint16_t *)dstp8;
+    stride /= 2;
+
+    __m128i words_th = _mm_set1_epi16(threshold - 32768);
+    __m128i words_32768 = _mm_set1_epi16(32768);
+    __m128i dwords_32768 = _mm_set1_epi32(32768);
+
+    int width_8 = width / 8 * 8;
+
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width_8; x += 8) {
+            __m128i center_pixel = _mm_loadu_si128((const __m128i *)&srcp[x]);
+
+            __m128i center_lo = _mm_unpacklo_epi16(center_pixel, zeroes);
+            __m128i center_hi = _mm_unpackhi_epi16(center_pixel, zeroes);
+
+            __m128i sum_lo = _mm_slli_epi32(center_lo, 1);
+            __m128i sum_hi = _mm_slli_epi32(center_hi, 1);
+
+            __m128i counter = _mm_set1_epi16(2);
+
+            for (int yy = std::max(-y, -radius); yy <= std::min(radius, height - y - 1); yy++) {
+                for (int xx = std::max(-x, -radius); xx <= std::min(radius, width - x - 8); xx++) {
+                    __m128i neighbour_pixel = _mm_loadu_si128((const __m128i *)&srcp[x + yy * stride + xx]);
+
+                    __m128i abs_diff = _mm_or_si128(_mm_subs_epu16(center_pixel, neighbour_pixel),
+                                                    _mm_subs_epu16(neighbour_pixel, center_pixel));
+                    abs_diff = _mm_sub_epi16(abs_diff, words_32768);
+
+                    __m128i gt_mask = _mm_cmpgt_epi16(words_th, abs_diff);
+
+                    // Subtract 65535 aka -1
+                    counter = _mm_sub_epi16(counter, gt_mask);
+
+                    __m128i gt_pixels = _mm_and_si128(gt_mask, neighbour_pixel);
+
+                    sum_lo = _mm_add_epi32(sum_lo,
+                                           _mm_unpacklo_epi16(gt_pixels, zeroes));
+                    sum_hi = _mm_add_epi32(sum_hi,
+                                           _mm_unpackhi_epi16(gt_pixels, zeroes));
+                }
+            }
+
+            __m128 counter_lo = _mm_cvtepi32_ps(_mm_unpacklo_epi16(counter, zeroes));
+            __m128 counter_hi = _mm_cvtepi32_ps(_mm_unpackhi_epi16(counter, zeroes));
+
+            __m128 resultf_lo = _mm_mul_ps(_mm_cvtepi32_ps(sum_lo),
+                                           _mm_rcp_ps(counter_lo));
+            __m128 resultf_hi = _mm_mul_ps(_mm_cvtepi32_ps(sum_hi),
+                                           _mm_rcp_ps(counter_hi));
+
+            resultf_lo = _mm_add_ps(resultf_lo, _mm_set1_ps(0.5f));
+            resultf_hi = _mm_add_ps(resultf_hi, _mm_set1_ps(0.5f));
+
+            __m128i result_lo = _mm_sub_epi32(_mm_cvttps_epi32(resultf_lo),
+                                              dwords_32768);
+            __m128i result_hi = _mm_sub_epi32(_mm_cvttps_epi32(resultf_hi),
+                                              dwords_32768);
+
+            __m128i result = _mm_add_epi16(_mm_packs_epi32(result_lo, result_hi),
+                                           words_32768);
+
+            _mm_storeu_si128((__m128i *)&dstp[x], result);
+        }
+
+        srcp += stride;
+        dstp += stride;
+    }
+
+    if (width_8 < width) {
+        process_plane_scalar<uint16_t>(srcp8,
+                                       dstp8,
+                                       width_8,
+                                       width,
+                                       height,
+                                       stride * 2,
+                                       threshold,
+                                       radius,
+                                       magic);
     }
 }
 
@@ -317,19 +405,15 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
         d.threshold[i] = d.threshold[i] * pixel_max / 255;
 
 
-    int opt = vsapi->propGetInt(in, "opt", 0, &err);
-
-    if (opt == 0) {
-        d.process_plane = (d.vi->format->bitsPerSample == 8) ? process_plane_scalar<uint8_t>
-                                                             : process_plane_scalar<uint16_t>;
-    } else if (opt == 1) {
-        d.process_plane = process_plane_sse2_8bit;
-    }
-
-
+    d.process_plane = (d.vi->format->bitsPerSample == 8) ? process_plane_scalar<uint8_t>
+                                                         : process_plane_scalar<uint16_t>;
+#if defined (MINIDEEN_X86)
+    d.process_plane = (d.vi->format->bitsPerSample == 8) ? process_plane_sse2_8bit
+                                                         : process_plane_sse2_16bit;
 
     for (int i = 1; i < MAX_PIXEL_COUNT; i++)
         d.magic[i] = (unsigned)(65536.0 / i + 0.5);
+#endif
 
 
     MiniDeenData *data = (MiniDeenData *)malloc(sizeof(d));
@@ -346,6 +430,5 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegiste
                  "radius:int[]:opt;"
                  "threshold:int[]:opt;"
                  "planes:int[]:opt;"
-                 "opt:int:opt;"
                  , minideenCreate, 0, plugin);
 }
