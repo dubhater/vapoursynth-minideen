@@ -13,7 +13,7 @@
 
 
 template <typename PixelType>
-static void process_plane_scalar(const uint8_t *srcp8, uint8_t *dstp8, int first_column, int width, int height, int stride, unsigned threshold, int radius, const unsigned magic[MAX_PIXEL_COUNT]) {
+static void process_plane_scalar(const uint8_t *srcp8, uint8_t *dstp8, int first_column, int last_column, int width, int height, int stride, unsigned threshold, int radius, const uint16_t magic[MAX_PIXEL_COUNT]) {
     (void)magic;
 
     const PixelType *srcp = (const PixelType *)srcp8;
@@ -21,7 +21,7 @@ static void process_plane_scalar(const uint8_t *srcp8, uint8_t *dstp8, int first
     stride /= sizeof(PixelType);
 
     for (int y = 0; y < height; y++) {
-        for (int x = first_column; x < width; x++) {
+        for (int x = first_column; x < last_column; x++) {
             unsigned center_pixel = srcp[x];
 
             unsigned sum = center_pixel * 2;
@@ -55,18 +55,22 @@ static void process_plane_scalar(const uint8_t *srcp8, uint8_t *dstp8, int first
 #define zeroes _mm_setzero_si128()
 
 
-static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int first_column, int width, int height, int stride, unsigned threshold, int radius, const unsigned magic[MAX_PIXEL_COUNT]) {
-    (void)first_column; // Always 0 in this function.
+static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int first_column, int last_column, int width, int height, int stride, unsigned threshold, int radius, const uint16_t magic[MAX_PIXEL_COUNT]) {
+    (void)first_column; // Unused in this function.
+    (void)last_column; // Unused in this function.
 
     const uint8_t *srcp_orig = srcp;
     uint8_t *dstp_orig = dstp;
 
     __m128i words_th = _mm_set1_epi16(threshold);
 
-    int width_16 = width / 16 * 16;
+    const int pixels_in_xmm = 16;
+
+    // Skip radius pixels on the left and at least radius pixels on the right.
+    int width_simd = (width - radius * 2) / pixels_in_xmm * pixels_in_xmm;
 
     for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width_16; x += 16) {
+        for (int x = radius; x < radius + width_simd; x += pixels_in_xmm) {
             __m128i center_pixel = _mm_loadu_si128((const __m128i *)&srcp[x]);
 
             __m128i center_lo = _mm_unpacklo_epi8(center_pixel, zeroes);
@@ -79,7 +83,7 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
             __m128i counter_hi = counter_lo;
 
             for (int yy = std::max(-y, -radius); yy <= std::min(radius, height - y - 1); yy++) {
-                for (int xx = std::max(-x, -radius); xx <= std::min(radius, width - x - 16); xx++) {
+                for (int xx = -radius; xx <= radius; xx++) {
                     __m128i neighbour_pixel = _mm_loadu_si128((const __m128i *)&srcp[x + yy * stride + xx]);
 
                     __m128i neighbour_lo = _mm_unpacklo_epi8(neighbour_pixel, zeroes);
@@ -146,22 +150,33 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
         dstp += stride;
     }
 
-    if (width_16 < width) {
-        process_plane_scalar<uint8_t>(srcp_orig,
-                                      dstp_orig,
-                                      width_16,
-                                      width,
-                                      height,
-                                      stride,
-                                      threshold,
-                                      radius,
-                                      magic);
-    }
+    process_plane_scalar<uint8_t>(srcp_orig,
+                                  dstp_orig,
+                                  0,
+                                  radius,
+                                  width,
+                                  height,
+                                  stride,
+                                  threshold,
+                                  radius,
+                                  magic);
+
+    process_plane_scalar<uint8_t>(srcp_orig,
+                                  dstp_orig,
+                                  radius + width_simd,
+                                  width,
+                                  width,
+                                  height,
+                                  stride,
+                                  threshold,
+                                  radius,
+                                  magic);
 }
 
 
-static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int first_column, int width, int height, int stride, unsigned threshold, int radius, const unsigned magic[MAX_PIXEL_COUNT]) {
-    (void)first_column; // Always 0 in this function.
+static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int first_column, int last_column, int width, int height, int stride, unsigned threshold, int radius, const uint16_t magic[MAX_PIXEL_COUNT]) {
+    (void)first_column; // Unused in this function.
+    (void)last_column; // Unused in this function.
     (void)magic;
 
     const uint16_t *srcp = (const uint16_t *)srcp8;
@@ -170,12 +185,14 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
 
     __m128i words_th = _mm_set1_epi16(threshold - 32768);
     __m128i words_32768 = _mm_set1_epi16(32768);
-    __m128i dwords_32768 = _mm_set1_epi32(32768);
 
-    int width_8 = width / 8 * 8;
+    const int pixels_in_xmm = 8;
+
+    // Skip radius pixels on the left and at least radius pixels on the right.
+    int width_simd = (width - radius * 2) / pixels_in_xmm * pixels_in_xmm;
 
     for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width_8; x += 8) {
+        for (int x = radius; x < radius + width_simd; x += pixels_in_xmm) {
             __m128i center_pixel = _mm_loadu_si128((const __m128i *)&srcp[x]);
 
             __m128i center_lo = _mm_unpacklo_epi16(center_pixel, zeroes);
@@ -187,7 +204,7 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
             __m128i counter = _mm_set1_epi16(2);
 
             for (int yy = std::max(-y, -radius); yy <= std::min(radius, height - y - 1); yy++) {
-                for (int xx = std::max(-x, -radius); xx <= std::min(radius, width - x - 8); xx++) {
+                for (int xx = -radius; xx <= radius; xx++) {
                     __m128i neighbour_pixel = _mm_loadu_si128((const __m128i *)&srcp[x + yy * stride + xx]);
 
                     __m128i abs_diff = _mm_or_si128(_mm_subs_epu16(center_pixel, neighbour_pixel),
@@ -216,13 +233,12 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
             __m128 resultf_hi = _mm_mul_ps(_mm_cvtepi32_ps(sum_hi),
                                            _mm_rcp_ps(counter_hi));
 
-            resultf_lo = _mm_add_ps(resultf_lo, _mm_set1_ps(0.5f));
-            resultf_hi = _mm_add_ps(resultf_hi, _mm_set1_ps(0.5f));
+            // Add 0.5f for rounding, subtract 32768 for packssdw.
+            resultf_lo = _mm_sub_ps(resultf_lo, _mm_set1_ps(32767.5f));
+            resultf_hi = _mm_sub_ps(resultf_hi, _mm_set1_ps(32767.5f));
 
-            __m128i result_lo = _mm_sub_epi32(_mm_cvttps_epi32(resultf_lo),
-                                              dwords_32768);
-            __m128i result_hi = _mm_sub_epi32(_mm_cvttps_epi32(resultf_hi),
-                                              dwords_32768);
+            __m128i result_lo = _mm_cvttps_epi32(resultf_lo);
+            __m128i result_hi = _mm_cvttps_epi32(resultf_hi);
 
             __m128i result = _mm_add_epi16(_mm_packs_epi32(result_lo, result_hi),
                                            words_32768);
@@ -234,17 +250,27 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
         dstp += stride;
     }
 
-    if (width_8 < width) {
-        process_plane_scalar<uint16_t>(srcp8,
-                                       dstp8,
-                                       width_8,
-                                       width,
-                                       height,
-                                       stride * 2,
-                                       threshold,
-                                       radius,
-                                       magic);
-    }
+    process_plane_scalar<uint16_t>(srcp8,
+                                   dstp8,
+                                   0,
+                                   radius,
+                                   width,
+                                   height,
+                                   stride * 2,
+                                   threshold,
+                                   radius,
+                                   magic);
+
+    process_plane_scalar<uint16_t>(srcp8,
+                                   dstp8,
+                                   radius + width_simd,
+                                   width,
+                                   width,
+                                   height,
+                                   stride * 2,
+                                   threshold,
+                                   radius,
+                                   magic);
 }
 
 #endif // MINIDEEN_X86
@@ -258,7 +284,7 @@ typedef struct MiniDeenData {
     int threshold[3];
     int process[3];
 
-    unsigned magic[MAX_PIXEL_COUNT];
+    uint16_t magic[MAX_PIXEL_COUNT];
 
     decltype (process_plane_scalar<uint8_t>) *process_plane;
 } MiniDeenData;
@@ -310,7 +336,7 @@ static const VSFrameRef *VS_CC minideenGetFrame(int n, int activationReason, voi
             int width = vsapi->getFrameWidth(src, plane);
             int height = vsapi->getFrameHeight(src, plane);
 
-            d->process_plane(srcp, dstp, 0, width, height, stride, d->threshold[plane], d->radius[plane], d->magic);
+            d->process_plane(srcp, dstp, 0, width, width, height, stride, d->threshold[plane], d->radius[plane], d->magic);
         }
 
         vsapi->freeFrame(src);
@@ -411,7 +437,7 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
     d.process_plane = (d.vi->format->bitsPerSample == 8) ? process_plane_sse2_8bit
                                                          : process_plane_sse2_16bit;
 
-    for (int i = 1; i < MAX_PIXEL_COUNT; i++)
+    for (int i = 3; i < MAX_PIXEL_COUNT; i++)
         d.magic[i] = (unsigned)(65536.0 / i + 0.5);
 #endif
 
