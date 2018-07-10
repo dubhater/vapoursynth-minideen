@@ -62,7 +62,7 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
     const uint8_t *srcp_orig = srcp;
     uint8_t *dstp_orig = dstp;
 
-    __m128i words_th = _mm_set1_epi16(threshold);
+    __m128i bytes_th = _mm_set1_epi8(threshold - 128);
 
     const int pixels_in_xmm = 16;
 
@@ -79,35 +79,32 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
             __m128i sum_lo = _mm_slli_epi16(center_lo, 1);
             __m128i sum_hi = _mm_slli_epi16(center_hi, 1);
 
-            __m128i counter_lo = _mm_set1_epi16(2);
-            __m128i counter_hi = counter_lo;
+            __m128i counter = _mm_set1_epi8(2);
 
             for (int yy = std::max(-y, -radius); yy <= std::min(radius, height - y - 1); yy++) {
                 for (int xx = -radius; xx <= radius; xx++) {
                     __m128i neighbour_pixel = _mm_loadu_si128((const __m128i *)&srcp[x + yy * stride + xx]);
 
-                    __m128i neighbour_lo = _mm_unpacklo_epi8(neighbour_pixel, zeroes);
-                    __m128i neighbour_hi = _mm_unpackhi_epi8(neighbour_pixel, zeroes);
+                    __m128i abs_diff = _mm_or_si128(_mm_subs_epu8(center_pixel, neighbour_pixel),
+                                                    _mm_subs_epu8(neighbour_pixel, center_pixel));
+                    abs_diff = _mm_add_epi8(abs_diff, _mm_set1_epi8(-128));
 
-                    __m128i abs_lo = _mm_or_si128(_mm_subs_epu16(center_lo, neighbour_lo),
-                                                  _mm_subs_epu16(neighbour_lo, center_lo));
-                    __m128i abs_hi = _mm_or_si128(_mm_subs_epu16(center_hi, neighbour_hi),
-                                                  _mm_subs_epu16(neighbour_hi, center_hi));
+                    __m128i gt_mask = _mm_cmpgt_epi8(bytes_th, abs_diff);
 
-                    __m128i gt_mask_lo = _mm_cmpgt_epi16(words_th, abs_lo);
-                    __m128i gt_mask_hi = _mm_cmpgt_epi16(words_th, abs_hi);
+                    // Subtract 255 aka -1
+                    counter = _mm_sub_epi8(counter, gt_mask);
 
-                    // Subtract 65535 aka -1
-                    counter_lo = _mm_sub_epi16(counter_lo, gt_mask_lo);
-                    counter_hi = _mm_sub_epi16(counter_hi, gt_mask_hi);
+                    __m128i gt_pixels = _mm_and_si128(gt_mask, neighbour_pixel);
 
-                    __m128i gt_pixels_lo = _mm_and_si128(gt_mask_lo, neighbour_lo);
-                    __m128i gt_pixels_hi = _mm_and_si128(gt_mask_hi, neighbour_hi);
-
-                    sum_lo = _mm_adds_epu16(sum_lo, gt_pixels_lo);
-                    sum_hi = _mm_adds_epu16(sum_hi, gt_pixels_hi);
+                    sum_lo = _mm_adds_epu16(sum_lo,
+                                            _mm_unpacklo_epi8(gt_pixels, zeroes));
+                    sum_hi = _mm_adds_epu16(sum_hi,
+                                            _mm_unpackhi_epi8(gt_pixels, zeroes));
                 }
             }
+
+            __m128i counter_lo = _mm_unpacklo_epi8(counter, zeroes);
+            __m128i counter_hi = _mm_unpackhi_epi8(counter, zeroes);
 
             sum_lo = _mm_add_epi16(sum_lo,
                                    _mm_srli_epi16(counter_lo, 1));
