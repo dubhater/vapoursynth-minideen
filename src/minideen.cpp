@@ -434,7 +434,7 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
     d.process_plane = (d.vi->format->bitsPerSample == 8) ? process_plane_sse2_8bit
                                                          : process_plane_sse2_16bit;
 
-    for (int i = 3; i < MAX_PIXEL_COUNT; i++)
+    for (int i = 2; i < MAX_PIXEL_COUNT; i++)
         d.magic[i] = (unsigned)(65536.0 / i + 0.5);
 #endif
 
