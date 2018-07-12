@@ -29,7 +29,7 @@ Parameters:
 
     *threshold*
         Only pixels that differ from the center pixel by less than the
-        *threshold* will be included in the average. Must be between 0
+        *threshold* will be included in the average. Must be between 2
         and 255.
 
         The threshold is scaled internally according to the bit depth.

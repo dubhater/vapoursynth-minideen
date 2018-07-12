@@ -379,8 +379,8 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
             return;
         }
 
-        if (d.threshold[i] < 0 || d.threshold[i] > 255) {
-            vsapi->setError(out, "MiniDeen: threshold must be between 0 and 255 (inclusive).");
+        if (d.threshold[i] < 2 || d.threshold[i] > 255) {
+            vsapi->setError(out, "MiniDeen: threshold must be between 2 and 255 (inclusive).");
             return;
         }
     }
