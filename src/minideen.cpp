@@ -62,7 +62,8 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
     const uint8_t *srcp_orig = srcp;
     uint8_t *dstp_orig = dstp;
 
-    __m128i bytes_th = _mm_set1_epi8(threshold - 128);
+    // Subtract 1 so we can use a less than or equal comparison instead of less than.
+    __m128i bytes_th = _mm_set1_epi8(threshold - 1);
 
     const int pixels_in_xmm = 16;
 
@@ -87,19 +88,22 @@ static void process_plane_sse2_8bit(const uint8_t *srcp, uint8_t *dstp, int firs
 
                     __m128i abs_diff = _mm_or_si128(_mm_subs_epu8(center_pixel, neighbour_pixel),
                                                     _mm_subs_epu8(neighbour_pixel, center_pixel));
-                    abs_diff = _mm_add_epi8(abs_diff, _mm_set1_epi8(-128));
 
-                    __m128i gt_mask = _mm_cmpgt_epi8(bytes_th, abs_diff);
+                    // Absolute difference less than or equal to th - 1 will be all zeroes.
+                    abs_diff = _mm_subs_epu8(abs_diff, bytes_th);
+
+                    // 0 bytes become 255, not 0 bytes become 0.
+                    __m128i mask = _mm_cmpeq_epi8(abs_diff, zeroes);
 
                     // Subtract 255 aka -1
-                    counter = _mm_sub_epi8(counter, gt_mask);
+                    counter = _mm_sub_epi8(counter, mask);
 
-                    __m128i gt_pixels = _mm_and_si128(gt_mask, neighbour_pixel);
+                    __m128i pixels = _mm_and_si128(mask, neighbour_pixel);
 
                     sum_lo = _mm_adds_epu16(sum_lo,
-                                            _mm_unpacklo_epi8(gt_pixels, zeroes));
+                                            _mm_unpacklo_epi8(pixels, zeroes));
                     sum_hi = _mm_adds_epu16(sum_hi,
-                                            _mm_unpackhi_epi8(gt_pixels, zeroes));
+                                            _mm_unpackhi_epi8(pixels, zeroes));
                 }
             }
 
@@ -180,7 +184,8 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
     uint16_t *dstp = (uint16_t *)dstp8;
     stride /= 2;
 
-    __m128i words_th = _mm_set1_epi16(threshold - 32768);
+    // Subtract 1 so we can use a less than or equal comparison instead of less than.
+    __m128i words_th = _mm_set1_epi16(threshold - 1);
     __m128i words_32768 = _mm_set1_epi16(32768);
 
     const int pixels_in_xmm = 8;
@@ -206,19 +211,22 @@ static void process_plane_sse2_16bit(const uint8_t *srcp8, uint8_t *dstp8, int f
 
                     __m128i abs_diff = _mm_or_si128(_mm_subs_epu16(center_pixel, neighbour_pixel),
                                                     _mm_subs_epu16(neighbour_pixel, center_pixel));
-                    abs_diff = _mm_sub_epi16(abs_diff, words_32768);
 
-                    __m128i gt_mask = _mm_cmpgt_epi16(words_th, abs_diff);
+                    // Absolute difference less than or equal to th - 1 will be all zeroes.
+                    abs_diff = _mm_subs_epu16(abs_diff, words_th);
+
+                    // 0 words become 65535, not 0 words become 0.
+                    __m128i mask = _mm_cmpeq_epi16(abs_diff, zeroes);
 
                     // Subtract 65535 aka -1
-                    counter = _mm_sub_epi16(counter, gt_mask);
+                    counter = _mm_sub_epi16(counter, mask);
 
-                    __m128i gt_pixels = _mm_and_si128(gt_mask, neighbour_pixel);
+                    __m128i pixels = _mm_and_si128(mask, neighbour_pixel);
 
                     sum_lo = _mm_add_epi32(sum_lo,
-                                           _mm_unpacklo_epi16(gt_pixels, zeroes));
+                                           _mm_unpacklo_epi16(pixels, zeroes));
                     sum_hi = _mm_add_epi32(sum_hi,
-                                           _mm_unpackhi_epi16(gt_pixels, zeroes));
+                                           _mm_unpackhi_epi16(pixels, zeroes));
                 }
             }
 
