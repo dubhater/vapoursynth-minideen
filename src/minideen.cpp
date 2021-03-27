@@ -387,8 +387,8 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
             return;
         }
 
-        if (d.threshold[i] < 2 || d.threshold[i] > 255) {
-            vsapi->setError(out, "MiniDeen: threshold must be between 2 and 255 (inclusive).");
+        if (d.threshold[i] < 0 || d.threshold[i] > 255) {
+            vsapi->setError(out, "MiniDeen: threshold must be between 0 and 255 (inclusive).");
             return;
         }
     }
@@ -428,6 +428,10 @@ static void VS_CC minideenCreate(const VSMap *in, VSMap *out, void *userData, VS
 
         d.process[o] = 1;
     }
+
+    // Only process a plane if the threshold is at least 2. Lower values would do nothing, slowly.
+    for (int i = 0; i < 3; i++)
+        d.process[i] = d.process[i] && d.threshold[i] >= 2;
 
 
     int pixel_max = (1 << d.vi->format->bitsPerSample) - 1;
